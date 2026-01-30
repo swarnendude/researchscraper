@@ -1,0 +1,377 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Link Scraper</title>
+    <style>
+        * { box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 2rem;
+            background: #f5f5f5;
+        }
+        h1 { color: #333; margin-bottom: 1.5rem; }
+        textarea {
+            width: 100%;
+            height: 200px;
+            padding: 1rem;
+            border: 2px solid #ddd;
+            border-radius: 8px;
+            font-size: 14px;
+            resize: vertical;
+        }
+        textarea:focus { outline: none; border-color: #007bff; }
+        button {
+            background: #007bff;
+            color: white;
+            border: none;
+            padding: 0.75rem 1.5rem;
+            font-size: 16px;
+            border-radius: 6px;
+            cursor: pointer;
+            margin-top: 1rem;
+        }
+        button:hover { background: #0056b3; }
+        button:disabled { background: #ccc; cursor: not-allowed; }
+        .progress-container {
+            margin-top: 1.5rem;
+            display: none;
+        }
+        .progress-bar {
+            background: #e9ecef;
+            border-radius: 8px;
+            height: 24px;
+            overflow: hidden;
+        }
+        .progress-fill {
+            background: #28a745;
+            height: 100%;
+            width: 0%;
+            transition: width 0.3s;
+        }
+        .progress-text {
+            margin-top: 0.5rem;
+            color: #666;
+            font-size: 14px;
+        }
+        .current-url {
+            margin-top: 0.5rem;
+            color: #999;
+            font-size: 12px;
+            word-break: break-all;
+        }
+        .download-container {
+            margin-top: 1.5rem;
+            display: none;
+        }
+        .download-btn {
+            background: #28a745;
+        }
+        .download-btn:hover { background: #1e7e34; }
+        .error {
+            color: #dc3545;
+            margin-top: 1rem;
+        }
+        .url-list {
+            margin-top: 1rem;
+            padding: 1rem;
+            background: white;
+            border-radius: 8px;
+            max-height: 150px;
+            overflow-y: auto;
+            display: none;
+        }
+        .url-item {
+            font-size: 12px;
+            padding: 0.25rem 0;
+            color: #666;
+        }
+        .url-item.done { color: #28a745; }
+        .url-item.error { color: #dc3545; }
+        .url-item.current { color: #007bff; font-weight: bold; }
+
+        .input-section {
+            margin-bottom: 1rem;
+        }
+        .divider {
+            display: flex;
+            align-items: center;
+            margin: 1.5rem 0;
+            color: #999;
+        }
+        .divider::before, .divider::after {
+            content: '';
+            flex: 1;
+            border-bottom: 1px solid #ddd;
+        }
+        .divider span {
+            padding: 0 1rem;
+            font-size: 14px;
+        }
+        .file-upload {
+            border: 2px dashed #ddd;
+            border-radius: 8px;
+            padding: 2rem;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.2s;
+            background: white;
+        }
+        .file-upload:hover {
+            border-color: #007bff;
+            background: #f8f9ff;
+        }
+        .file-upload.dragover {
+            border-color: #007bff;
+            background: #e7f1ff;
+        }
+        .file-upload input {
+            display: none;
+        }
+        .file-upload-icon {
+            font-size: 2rem;
+            margin-bottom: 0.5rem;
+        }
+        .file-upload-text {
+            color: #666;
+            font-size: 14px;
+        }
+        .file-upload-hint {
+            color: #999;
+            font-size: 12px;
+            margin-top: 0.5rem;
+        }
+        .file-name {
+            margin-top: 1rem;
+            padding: 0.5rem 1rem;
+            background: #e9ecef;
+            border-radius: 4px;
+            display: none;
+            font-size: 14px;
+        }
+        .file-name .remove {
+            color: #dc3545;
+            cursor: pointer;
+            margin-left: 0.5rem;
+        }
+    </style>
+</head>
+<body>
+    <h1>🔗 Link Scraper</h1>
+
+    <div class="input-section">
+        <textarea id="content" placeholder="Paste your content containing URLs here..."></textarea>
+    </div>
+
+    <div class="divider"><span>OR</span></div>
+
+    <div class="file-upload" id="dropZone" onclick="document.getElementById('fileInput').click()">
+        <input type="file" id="fileInput" accept=".pdf,.docx" onchange="handleFileSelect(event)">
+        <div class="file-upload-icon">📄</div>
+        <div class="file-upload-text">Click or drag & drop a file</div>
+        <div class="file-upload-hint">Supports PDF and DOCX files (max 16MB)</div>
+    </div>
+    <div class="file-name" id="fileName">
+        <span id="fileNameText"></span>
+        <span class="remove" onclick="clearFile(event)">✕</span>
+    </div>
+
+    <button id="scrapeBtn" onclick="startScraping()">Scrape Links</button>
+
+    <div class="progress-container" id="progressContainer">
+        <div class="progress-bar">
+            <div class="progress-fill" id="progressFill"></div>
+        </div>
+        <div class="progress-text" id="progressText">Preparing...</div>
+        <div class="current-url" id="currentUrl"></div>
+    </div>
+
+    <div class="url-list" id="urlList"></div>
+
+    <div class="error" id="errorMsg"></div>
+
+    <div class="download-container" id="downloadContainer">
+        <button class="download-btn" onclick="downloadFile()">📥 Download Markdown</button>
+    </div>
+
+    <script>
+        let sessionId = null;
+        let urls = [];
+        let uploadedFile = null;
+
+        // Drag and drop handling
+        const dropZone = document.getElementById('dropZone');
+
+        dropZone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            dropZone.classList.add('dragover');
+        });
+
+        dropZone.addEventListener('dragleave', () => {
+            dropZone.classList.remove('dragover');
+        });
+
+        dropZone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            dropZone.classList.remove('dragover');
+            const files = e.dataTransfer.files;
+            if (files.length > 0) {
+                handleFile(files[0]);
+            }
+        });
+
+        function handleFileSelect(event) {
+            const file = event.target.files[0];
+            if (file) {
+                handleFile(file);
+            }
+        }
+
+        function handleFile(file) {
+            const ext = file.name.split('.').pop().toLowerCase();
+            if (!['pdf', 'docx'].includes(ext)) {
+                showError('Invalid file type. Only PDF and DOCX are supported.');
+                return;
+            }
+            if (file.size > 16 * 1024 * 1024) {
+                showError('File too large. Maximum size is 16MB.');
+                return;
+            }
+            uploadedFile = file;
+            document.getElementById('fileNameText').textContent = file.name;
+            document.getElementById('fileName').style.display = 'inline-block';
+            document.getElementById('content').value = '';
+            hideError();
+        }
+
+        function clearFile(event) {
+            event.stopPropagation();
+            uploadedFile = null;
+            document.getElementById('fileInput').value = '';
+            document.getElementById('fileName').style.display = 'none';
+        }
+
+        async function startScraping() {
+            const content = document.getElementById('content').value.trim();
+
+            if (!content && !uploadedFile) {
+                showError('Please paste content or upload a file containing URLs');
+                return;
+            }
+
+            let textToScrape = content;
+
+            // If file uploaded, extract text from it first
+            if (uploadedFile) {
+                try {
+                    updateProgress(0, 0, 'Extracting text from file...');
+                    document.getElementById('progressContainer').style.display = 'block';
+
+                    const formData = new FormData();
+                    formData.append('file', uploadedFile);
+
+                    const uploadResponse = await fetch('/upload', {
+                        method: 'POST',
+                        body: formData
+                    });
+
+                    if (!uploadResponse.ok) {
+                        const data = await uploadResponse.json();
+                        throw new Error(data.error || 'Failed to process file');
+                    }
+
+                    const uploadData = await uploadResponse.json();
+                    textToScrape = uploadData.text;
+                } catch (error) {
+                    showError(error.message);
+                    document.getElementById('progressContainer').style.display = 'none';
+                    return;
+                }
+            }
+
+            if (!textToScrape) {
+                showError('No text content found');
+                return;
+            }
+
+            // Reset UI
+            hideError();
+            document.getElementById('scrapeBtn').disabled = true;
+            document.getElementById('progressContainer').style.display = 'block';
+            document.getElementById('downloadContainer').style.display = 'none';
+            document.getElementById('urlList').style.display = 'none';
+            updateProgress(0, 0, 'Extracting URLs...');
+
+            try {
+                // Start scraping session
+                const response = await fetch('/scrape', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ text: textToScrape })
+                });
+
+                if (!response.ok) {
+                    const data = await response.json();
+                    throw new Error(data.error || 'Failed to start scraping');
+                }
+
+                const data = await response.json();
+                sessionId = data.session_id;
+                urls = data.urls;
+
+                // Show URL list
+                const urlList = document.getElementById('urlList');
+                urlList.innerHTML = urls.map((url, i) =>
+                    `<div class="url-item" id="url-${i}">${url}</div>`
+                ).join('');
+                urlList.style.display = 'block';
+
+                // Scrape each URL sequentially
+                for (let i = 0; i < urls.length; i++) {
+                    document.getElementById(`url-${i}`).className = 'url-item current';
+                    updateProgress(i, urls.length, `Scraping ${i + 1} of ${urls.length}...`);
+                    document.getElementById('currentUrl').textContent = urls[i];
+
+                    const result = await fetch(`/scrape/${sessionId}/${i}`, { method: 'POST' });
+                    const resultData = await result.json();
+
+                    const urlItem = document.getElementById(`url-${i}`);
+                    urlItem.className = resultData.result.success ? 'url-item done' : 'url-item error';
+                }
+
+                updateProgress(urls.length, urls.length, 'Complete!');
+                document.getElementById('currentUrl').textContent = '';
+                document.getElementById('downloadContainer').style.display = 'block';
+
+            } catch (error) {
+                showError(error.message);
+            } finally {
+                document.getElementById('scrapeBtn').disabled = false;
+            }
+        }
+
+        function updateProgress(current, total, text) {
+            const percent = total > 0 ? (current / total) * 100 : 0;
+            document.getElementById('progressFill').style.width = percent + '%';
+            document.getElementById('progressText').textContent = text;
+        }
+
+        function showError(msg) {
+            document.getElementById('errorMsg').textContent = msg;
+        }
+
+        function hideError() {
+            document.getElementById('errorMsg').textContent = '';
+        }
+
+        function downloadFile() {
+            if (sessionId) {
+                window.location.href = `/download/${sessionId}`;
+            }
+        }
+    </script>
+</body>
+</html>
