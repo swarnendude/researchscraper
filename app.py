@@ -2,19 +2,27 @@ import re
 import os
 import uuid
 import requests
-from flask import Flask, render_template, request, jsonify, send_file
+from flask import Flask, render_template, request, jsonify, send_file, send_from_directory
 from bs4 import BeautifulSoup
 from urllib.parse import urlparse
 import tempfile
 from werkzeug.utils import secure_filename
 import io
 from datetime import datetime
+import anthropic
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 # PDF and DOCX parsing
 import PyPDF2
 from docx import Document
 import zipfile
 import xml.etree.ElementTree as ET
+
+# Initialize Anthropic client (reads ANTHROPIC_API_KEY from environment)
+claude_client = anthropic.Anthropic()
 
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max upload
@@ -133,6 +141,62 @@ def extract_urls(text):
         if url and urlparse(url).netloc:
             cleaned.append(url)
     return list(dict.fromkeys(cleaned))  # Remove duplicates, preserve order
+
+
+def generate_title_with_claude(content):
+    """Use Claude to generate a short, descriptive title based on content."""
+    try:
+        # Take first 3000 chars of content for context
+        content_preview = content[:3000] if len(content) > 3000 else content
+
+        message = claude_client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=100,
+            messages=[
+                {
+                    "role": "user",
+                    "content": f"""Based on the following scraped content, generate a short, descriptive title (3-6 words) that captures the main topic. Return ONLY the title, nothing else.
+
+Content:
+{content_preview}"""
+                }
+            ]
+        )
+
+        title = message.content[0].text.strip()
+        # Clean up the title - remove quotes if present
+        title = title.strip('"\'')
+        # Limit length
+        if len(title) > 60:
+            title = title[:60]
+        return title
+    except Exception as e:
+        print(f"Error generating title with Claude: {e}")
+        return None
+
+
+def generate_filename_from_title(title):
+    """Convert a title to a safe filename."""
+    if not title:
+        return 'scraped_content.md'
+
+    # Remove special characters, keep alphanumeric, spaces, hyphens
+    clean_title = re.sub(r'[^\w\s\-]', '', title)
+
+    # Replace multiple spaces with single space
+    clean_title = re.sub(r'\s+', ' ', clean_title).strip()
+
+    # Truncate if too long (max 50 chars for filename)
+    if len(clean_title) > 50:
+        clean_title = clean_title[:50].rsplit(' ', 1)[0]
+
+    # Replace spaces with underscores for filename
+    clean_title = clean_title.replace(' ', '_')
+
+    if not clean_title:
+        return 'scraped_content.md'
+
+    return f'{clean_title}.md'
 
 
 def generate_filename_from_results(results):
@@ -338,8 +402,19 @@ def download(session_id):
 
     session = scrape_results[session_id]
 
-    # Build markdown document
-    markdown = '# Scraped Content\n\n'
+    # Collect all content for title generation
+    all_content = ""
+    for result in session['results']:
+        if result and result.get('success'):
+            all_content += result.get('content', '') + "\n\n"
+
+    # Generate title using Claude
+    generated_title = generate_title_with_claude(all_content)
+    if not generated_title:
+        generated_title = "Scraped Content"
+
+    # Build markdown document with generated title
+    markdown = f'# {generated_title}\n\n'
     markdown += f'Total URLs: {session["total"]}\n\n---\n\n'
 
     for result in session['results']:
@@ -350,15 +425,18 @@ def download(session_id):
             markdown += result['content']
             markdown += '\n\n---\n\n'
 
-    # Use uploaded filename if available, otherwise generate from content
+    # Use uploaded filename if available, otherwise generate from Claude title
     original_filename = session.get('filename', '')
     if original_filename:
         # Remove extension and add .md
         base_name = original_filename.rsplit('.', 1)[0] if '.' in original_filename else original_filename
-        download_filename = f'{base_name}.md'
+        download_filename = f'Scraped_{base_name}.md'
     else:
-        # Generate filename from scraped titles
-        download_filename = generate_filename_from_results(session['results'])
+        # Generate filename from Claude-generated title
+        download_filename = f'Scraped_{generate_filename_from_title(generated_title)}'
+        # Ensure .md extension
+        if not download_filename.endswith('.md'):
+            download_filename += '.md'
 
     # Ensure unique filename in output folder
     download_filename = get_unique_filename(OUTPUT_FOLDER, download_filename)
@@ -385,13 +463,17 @@ def get_history():
             filepath = os.path.join(OUTPUT_FOLDER, filename)
             stat = os.stat(filepath)
 
-            # Read first line to get title
-            title = filename.replace('.md', '').replace('_', ' ')
+            # Default title from filename
+            title = filename.replace('.md', '').replace('_', ' ').replace('Scraped ', '')
+
+            # Try to extract the Claude-generated title from the first line (# Title)
             try:
                 with open(filepath, 'r', encoding='utf-8') as f:
                     first_line = f.readline().strip()
                     if first_line.startswith('# '):
-                        title = first_line[2:]
+                        title = first_line[2:].strip()
+                        if len(title) > 60:
+                            title = title[:60] + '...'
             except:
                 pass
 
@@ -407,29 +489,52 @@ def get_history():
     return jsonify(files)
 
 
-@app.route('/history/<filename>')
+@app.route('/history/download/<path:filename>')
 def download_history_file(filename):
     """Download a specific file from history."""
-    # Sanitize filename to prevent directory traversal
-    filename = secure_filename(filename)
-    filepath = os.path.join(OUTPUT_FOLDER, filename)
+    # Only allow .md files and prevent directory traversal
+    if '..' in filename or filename.startswith('/'):
+        return jsonify({'error': 'Invalid filename'}), 400
 
-    if not os.path.exists(filepath):
-        return jsonify({'error': 'File not found'}), 404
+    if not filename.endswith('.md'):
+        return jsonify({'error': 'Invalid file type'}), 400
 
-    return send_file(
-        filepath,
+    return send_from_directory(
+        OUTPUT_FOLDER,
+        filename,
         as_attachment=True,
-        download_name=filename,
         mimetype='text/markdown'
     )
 
 
-@app.route('/history/<filename>', methods=['DELETE'])
+@app.route('/history/view/<path:filename>')
+def view_history_file(filename):
+    """View a specific file from history in browser."""
+    # Only allow .md files and prevent directory traversal
+    if '..' in filename or filename.startswith('/'):
+        return jsonify({'error': 'Invalid filename'}), 400
+
+    if not filename.endswith('.md'):
+        return jsonify({'error': 'Invalid file type'}), 400
+
+    return send_from_directory(
+        OUTPUT_FOLDER,
+        filename,
+        as_attachment=False,
+        mimetype='text/plain; charset=utf-8'
+    )
+
+
+@app.route('/history/delete/<path:filename>', methods=['POST'])
 def delete_history_file(filename):
     """Delete a specific file from history."""
-    # Sanitize filename to prevent directory traversal
-    filename = secure_filename(filename)
+    # Only allow .md files and prevent directory traversal
+    if '..' in filename or filename.startswith('/'):
+        return jsonify({'error': 'Invalid filename'}), 400
+
+    if not filename.endswith('.md'):
+        return jsonify({'error': 'Invalid file type'}), 400
+
     filepath = os.path.join(OUTPUT_FOLDER, filename)
 
     if not os.path.exists(filepath):

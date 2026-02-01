@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Link Scraper</title>
+    <title>SD Link Scraper</title>
     <style>
         * { box-sizing: border-box; }
         body {
@@ -57,6 +57,15 @@
         .history-item-title {
             font-size: 13px;
             color: #333;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            margin-bottom: 0.2rem;
+            font-weight: 500;
+        }
+        .history-item-filename {
+            font-size: 11px;
+            color: #888;
             white-space: nowrap;
             overflow: hidden;
             text-overflow: ellipsis;
@@ -240,18 +249,87 @@
             font-size: 12px;
             margin-top: 0.5rem;
         }
-        .file-name {
+
+        /* Multiple files list */
+        .files-list {
             margin-top: 1rem;
-            padding: 0.5rem 1rem;
+            display: none;
+        }
+        .files-list.show {
+            display: block;
+        }
+        .file-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0.5rem 0.75rem;
             background: #e9ecef;
             border-radius: 4px;
-            display: none;
+            margin-bottom: 0.5rem;
             font-size: 14px;
         }
-        .file-name .remove {
+        .file-item-name {
+            flex: 1;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            margin-right: 0.5rem;
+        }
+        .file-item-status {
+            font-size: 12px;
+            color: #666;
+            margin-right: 0.5rem;
+        }
+        .file-item-status.processing {
+            color: #007bff;
+        }
+        .file-item-status.done {
+            color: #28a745;
+        }
+        .file-item-status.error {
+            color: #dc3545;
+        }
+        .file-item .remove {
             color: #dc3545;
             cursor: pointer;
-            margin-left: 0.5rem;
+            padding: 0.25rem;
+            font-size: 16px;
+        }
+        .file-item .remove:hover {
+            background: #ddd;
+            border-radius: 4px;
+        }
+        .clear-all-btn {
+            background: #6c757d;
+            font-size: 12px;
+            padding: 0.4rem 0.75rem;
+            margin-top: 0.5rem;
+        }
+        .clear-all-btn:hover {
+            background: #5a6268;
+        }
+
+        /* Batch progress */
+        .batch-progress {
+            margin-top: 1rem;
+            padding: 1rem;
+            background: #fff;
+            border-radius: 8px;
+            border: 1px solid #e0e0e0;
+            display: none;
+        }
+        .batch-progress.show {
+            display: block;
+        }
+        .batch-progress-header {
+            font-weight: 600;
+            margin-bottom: 0.75rem;
+            color: #333;
+        }
+        .batch-progress-text {
+            font-size: 13px;
+            color: #666;
+            margin-top: 0.5rem;
         }
 
         /* Responsive */
@@ -287,7 +365,7 @@
 
     <!-- Main Content -->
     <main class="main-content">
-        <h1>Link Scraper</h1>
+        <h1>SD Link Scraper</h1>
 
         <div class="input-section">
             <textarea id="content" placeholder="Paste your content containing URLs here..."></textarea>
@@ -296,17 +374,24 @@
         <div class="divider"><span>OR</span></div>
 
         <div class="file-upload" id="dropZone" onclick="document.getElementById('fileInput').click()">
-            <input type="file" id="fileInput" accept=".pdf,.docx" onchange="handleFileSelect(event)">
+            <input type="file" id="fileInput" accept=".pdf,.docx" multiple onchange="handleFileSelect(event)">
             <div class="file-upload-icon">📄</div>
-            <div class="file-upload-text">Click or drag & drop a file</div>
-            <div class="file-upload-hint">Supports PDF and DOCX files (max 16MB)</div>
-        </div>
-        <div class="file-name" id="fileName">
-            <span id="fileNameText"></span>
-            <span class="remove" onclick="clearFile(event)">✕</span>
+            <div class="file-upload-text">Click or drag & drop files</div>
+            <div class="file-upload-hint">Supports multiple PDF and DOCX files (max 16MB each)</div>
         </div>
 
+        <div class="files-list" id="filesList"></div>
+
         <button id="scrapeBtn" onclick="startScraping()">Scrape Links</button>
+
+        <!-- Batch progress for multiple files -->
+        <div class="batch-progress" id="batchProgress">
+            <div class="batch-progress-header">Processing Files</div>
+            <div class="progress-bar">
+                <div class="progress-fill" id="batchProgressFill"></div>
+            </div>
+            <div class="batch-progress-text" id="batchProgressText">Preparing...</div>
+        </div>
 
         <div class="progress-container" id="progressContainer">
             <div class="progress-bar">
@@ -328,7 +413,7 @@
     <script>
         let sessionId = null;
         let urls = [];
-        let uploadedFile = null;
+        let uploadedFiles = [];
 
         // Load history on page load
         document.addEventListener('DOMContentLoaded', loadHistory);
@@ -362,11 +447,13 @@
                 const size = formatFileSize(file.size);
 
                 return `
-                    <div class="history-item" onclick="downloadHistoryFile('${file.filename}')">
+                    <div class="history-item" onclick="viewHistoryFile('${file.filename}')">
                         <div class="history-item-title" title="${file.title}">${file.title}</div>
+                        <div class="history-item-filename" title="${file.filename}">${file.filename}</div>
                         <div class="history-item-meta">
                             <span class="history-item-date">${formattedDate}</span>
                             <div class="history-item-actions">
+                                <button class="history-action-btn" onclick="event.stopPropagation(); viewHistoryFile('${file.filename}')" title="View">View</button>
                                 <button class="history-action-btn" onclick="event.stopPropagation(); downloadHistoryFile('${file.filename}')" title="Download">Download</button>
                                 <button class="history-action-btn delete" onclick="event.stopPropagation(); deleteHistoryFile('${file.filename}')" title="Delete">Delete</button>
                             </div>
@@ -382,16 +469,20 @@
             return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
         }
 
+        function viewHistoryFile(filename) {
+            window.open(`/history/view/${encodeURIComponent(filename)}`, '_blank');
+        }
+
         function downloadHistoryFile(filename) {
-            window.location.href = `/history/${encodeURIComponent(filename)}`;
+            window.location.href = `/history/download/${encodeURIComponent(filename)}`;
         }
 
         async function deleteHistoryFile(filename) {
             if (!confirm('Delete this file?')) return;
 
             try {
-                const response = await fetch(`/history/${encodeURIComponent(filename)}`, {
-                    method: 'DELETE'
+                const response = await fetch(`/history/delete/${encodeURIComponent(filename)}`, {
+                    method: 'POST'
                 });
 
                 if (response.ok) {
@@ -420,61 +511,119 @@
         dropZone.addEventListener('drop', (e) => {
             e.preventDefault();
             dropZone.classList.remove('dragover');
-            const files = e.dataTransfer.files;
-            if (files.length > 0) {
-                handleFile(files[0]);
-            }
+            const files = Array.from(e.dataTransfer.files);
+            handleFiles(files);
         });
 
         function handleFileSelect(event) {
-            const file = event.target.files[0];
-            if (file) {
-                handleFile(file);
+            const files = Array.from(event.target.files);
+            handleFiles(files);
+        }
+
+        function handleFiles(files) {
+            for (const file of files) {
+                const ext = file.name.split('.').pop().toLowerCase();
+                if (!['pdf', 'docx'].includes(ext)) {
+                    showError(`Invalid file type: ${file.name}. Only PDF and DOCX are supported.`);
+                    continue;
+                }
+                if (file.size > 16 * 1024 * 1024) {
+                    showError(`File too large: ${file.name}. Maximum size is 16MB.`);
+                    continue;
+                }
+                // Check for duplicates
+                if (!uploadedFiles.some(f => f.name === file.name && f.size === file.size)) {
+                    uploadedFiles.push(file);
+                }
+            }
+            renderFilesList();
+            if (uploadedFiles.length > 0) {
+                document.getElementById('content').value = '';
+                hideError();
             }
         }
 
-        function handleFile(file) {
-            const ext = file.name.split('.').pop().toLowerCase();
-            if (!['pdf', 'docx'].includes(ext)) {
-                showError('Invalid file type. Only PDF and DOCX are supported.');
+        function renderFilesList() {
+            const filesList = document.getElementById('filesList');
+
+            if (uploadedFiles.length === 0) {
+                filesList.classList.remove('show');
+                filesList.innerHTML = '';
                 return;
             }
-            if (file.size > 16 * 1024 * 1024) {
-                showError('File too large. Maximum size is 16MB.');
-                return;
-            }
-            uploadedFile = file;
-            document.getElementById('fileNameText').textContent = file.name;
-            document.getElementById('fileName').style.display = 'inline-block';
-            document.getElementById('content').value = '';
-            hideError();
+
+            filesList.classList.add('show');
+            filesList.innerHTML = uploadedFiles.map((file, index) => `
+                <div class="file-item" id="file-item-${index}">
+                    <span class="file-item-name" title="${file.name}">${file.name}</span>
+                    <span class="file-item-status" id="file-status-${index}"></span>
+                    <span class="remove" onclick="removeFile(${index})">✕</span>
+                </div>
+            `).join('') + `
+                <button class="clear-all-btn" onclick="clearAllFiles()">Clear All</button>
+            `;
         }
 
-        function clearFile(event) {
-            event.stopPropagation();
-            uploadedFile = null;
+        function removeFile(index) {
+            uploadedFiles.splice(index, 1);
+            renderFilesList();
+        }
+
+        function clearAllFiles() {
+            uploadedFiles = [];
             document.getElementById('fileInput').value = '';
-            document.getElementById('fileName').style.display = 'none';
+            renderFilesList();
+        }
+
+        function updateFileStatus(index, status, className) {
+            const statusEl = document.getElementById(`file-status-${index}`);
+            if (statusEl) {
+                statusEl.textContent = status;
+                statusEl.className = 'file-item-status ' + className;
+            }
         }
 
         async function startScraping() {
             const content = document.getElementById('content').value.trim();
 
-            if (!content && !uploadedFile) {
-                showError('Please paste content or upload a file containing URLs');
+            if (!content && uploadedFiles.length === 0) {
+                showError('Please paste content or upload files containing URLs');
                 return;
             }
 
-            let textToScrape = content;
+            hideError();
+            document.getElementById('scrapeBtn').disabled = true;
+            document.getElementById('downloadContainer').style.display = 'none';
 
-            // If file uploaded, extract text from it first
-            if (uploadedFile) {
+            // If multiple files, process them in batch
+            if (uploadedFiles.length > 0) {
+                await processBatch();
+            } else {
+                // Single text content
+                await processText(content, '');
+            }
+
+            document.getElementById('scrapeBtn').disabled = false;
+        }
+
+        async function processBatch() {
+            const batchProgress = document.getElementById('batchProgress');
+            batchProgress.classList.add('show');
+
+            const totalFiles = uploadedFiles.length;
+            let completedFiles = 0;
+            let successCount = 0;
+            let errorCount = 0;
+
+            for (let i = 0; i < uploadedFiles.length; i++) {
+                const file = uploadedFiles[i];
+                updateBatchProgress(i, totalFiles, `Processing file ${i + 1} of ${totalFiles}: ${file.name}`);
+                updateFileStatus(i, 'Processing...', 'processing');
+
                 try {
-                    updateProgress(0, 0, 'Extracting text from file...');
-                    document.getElementById('progressContainer').style.display = 'block';
-
+                    // Extract text from file
                     const formData = new FormData();
-                    formData.append('file', uploadedFile);
+                    formData.append('file', file);
 
                     const uploadResponse = await fetch('/upload', {
                         method: 'POST',
@@ -487,24 +636,51 @@
                     }
 
                     const uploadData = await uploadResponse.json();
-                    textToScrape = uploadData.text;
+
+                    // Process the text
+                    const success = await processText(uploadData.text, file.name, true);
+
+                    if (success) {
+                        updateFileStatus(i, 'Done', 'done');
+                        successCount++;
+                    } else {
+                        updateFileStatus(i, 'No URLs', 'error');
+                        errorCount++;
+                    }
                 } catch (error) {
-                    showError(error.message);
-                    document.getElementById('progressContainer').style.display = 'none';
-                    return;
+                    updateFileStatus(i, 'Error', 'error');
+                    errorCount++;
+                    console.error(`Error processing ${file.name}:`, error);
                 }
+
+                completedFiles++;
             }
 
-            if (!textToScrape) {
-                showError('No text content found');
-                return;
+            updateBatchProgress(totalFiles, totalFiles, `Complete! ${successCount} successful, ${errorCount} failed`);
+
+            // Refresh history
+            loadHistory();
+
+            // Hide batch progress after a delay
+            setTimeout(() => {
+                batchProgress.classList.remove('show');
+            }, 3000);
+        }
+
+        function updateBatchProgress(current, total, text) {
+            const percent = total > 0 ? (current / total) * 100 : 0;
+            document.getElementById('batchProgressFill').style.width = percent + '%';
+            document.getElementById('batchProgressText').textContent = text;
+        }
+
+        async function processText(text, filename, isBatch = false) {
+            if (!text) {
+                if (!isBatch) showError('No text content found');
+                return false;
             }
 
-            // Reset UI
-            hideError();
-            document.getElementById('scrapeBtn').disabled = true;
+            // Show progress for URL scraping
             document.getElementById('progressContainer').style.display = 'block';
-            document.getElementById('downloadContainer').style.display = 'none';
             document.getElementById('urlList').style.display = 'none';
             updateProgress(0, 0, 'Extracting URLs...');
 
@@ -514,13 +690,18 @@
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
-                        text: textToScrape,
-                        filename: uploadedFile ? uploadedFile.name : ''
+                        text: text,
+                        filename: filename
                     })
                 });
 
                 if (!response.ok) {
                     const data = await response.json();
+                    if (data.error === 'No URLs found in the text') {
+                        if (!isBatch) showError('No URLs found in the text');
+                        document.getElementById('progressContainer').style.display = 'none';
+                        return false;
+                    }
                     throw new Error(data.error || 'Failed to start scraping');
                 }
 
@@ -550,12 +731,25 @@
 
                 updateProgress(urls.length, urls.length, 'Complete!');
                 document.getElementById('currentUrl').textContent = '';
-                document.getElementById('downloadContainer').style.display = 'block';
+
+                // Auto-save (trigger download endpoint to save file)
+                await fetch(`/download/${sessionId}`);
+
+                if (!isBatch) {
+                    document.getElementById('downloadContainer').style.display = 'block';
+                    loadHistory();
+                }
+
+                return true;
 
             } catch (error) {
-                showError(error.message);
+                if (!isBatch) showError(error.message);
+                return false;
             } finally {
-                document.getElementById('scrapeBtn').disabled = false;
+                if (isBatch) {
+                    document.getElementById('progressContainer').style.display = 'none';
+                    document.getElementById('urlList').style.display = 'none';
+                }
             }
         }
 
