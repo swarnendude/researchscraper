@@ -8,6 +8,7 @@ from urllib.parse import urlparse
 import tempfile
 from werkzeug.utils import secure_filename
 import io
+from datetime import datetime
 
 # PDF and DOCX parsing
 import PyPDF2
@@ -19,6 +20,10 @@ app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max upload
 
 ALLOWED_EXTENSIONS = {'pdf', 'docx'}
+
+# Output folder for saved markdown files
+OUTPUT_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'output')
+os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 
 
 def allowed_file(filename):
@@ -130,6 +135,41 @@ def extract_urls(text):
     return list(dict.fromkeys(cleaned))  # Remove duplicates, preserve order
 
 
+def generate_filename_from_results(results):
+    """Generate a meaningful filename based on scraped content titles."""
+    # Collect successful titles
+    titles = [r['title'] for r in results if r and r.get('success') and r.get('title')]
+
+    if not titles:
+        return 'scraped_content.md'
+
+    # Use the first successful title as the base
+    title = titles[0]
+
+    # Clean the title for use as filename
+    # Remove common suffixes like "| Site Name", "- Company", etc.
+    title = re.split(r'\s*[\|\-\u2013\u2014]\s*', title)[0].strip()
+
+    # Remove special characters, keep alphanumeric, spaces, hyphens
+    title = re.sub(r'[^\w\s\-]', '', title)
+
+    # Replace multiple spaces with single space
+    title = re.sub(r'\s+', ' ', title).strip()
+
+    # Truncate if too long (max 50 chars for filename)
+    if len(title) > 50:
+        title = title[:50].rsplit(' ', 1)[0]  # Cut at word boundary
+
+    # Replace spaces with underscores for filename
+    title = title.replace(' ', '_')
+
+    # Fallback if title became empty
+    if not title:
+        return 'scraped_content.md'
+
+    return f'{title}.md'
+
+
 def scrape_url(url, timeout=10):
     """Scrape content from a single URL."""
     try:
@@ -228,6 +268,7 @@ def upload_file():
 def scrape():
     data = request.json
     text = data.get('text', '')
+    filename = data.get('filename', '')
 
     urls = extract_urls(text)
     if not urls:
@@ -239,7 +280,8 @@ def scrape():
         'urls': urls,
         'results': [],
         'total': len(urls),
-        'completed': 0
+        'completed': 0,
+        'filename': filename
     }
 
     return jsonify({
@@ -274,6 +316,21 @@ def scrape_single(session_id, index):
     })
 
 
+def get_unique_filename(folder, filename):
+    """Generate a unique filename by adding a number suffix if file exists."""
+    base_name = filename.rsplit('.', 1)[0] if '.' in filename else filename
+    extension = '.md'
+
+    # Check if file exists, if so add number suffix
+    final_filename = filename
+    counter = 1
+    while os.path.exists(os.path.join(folder, final_filename)):
+        final_filename = f'{base_name}_{counter}{extension}'
+        counter += 1
+
+    return final_filename
+
+
 @app.route('/download/<session_id>')
 def download(session_id):
     if session_id not in scrape_results:
@@ -293,17 +350,96 @@ def download(session_id):
             markdown += result['content']
             markdown += '\n\n---\n\n'
 
-    # Create temp file
-    temp_file = tempfile.NamedTemporaryFile(mode='w', suffix='.md', delete=False, encoding='utf-8')
-    temp_file.write(markdown)
-    temp_file.close()
+    # Use uploaded filename if available, otherwise generate from content
+    original_filename = session.get('filename', '')
+    if original_filename:
+        # Remove extension and add .md
+        base_name = original_filename.rsplit('.', 1)[0] if '.' in original_filename else original_filename
+        download_filename = f'{base_name}.md'
+    else:
+        # Generate filename from scraped titles
+        download_filename = generate_filename_from_results(session['results'])
+
+    # Ensure unique filename in output folder
+    download_filename = get_unique_filename(OUTPUT_FOLDER, download_filename)
+
+    # Save to output folder
+    output_path = os.path.join(OUTPUT_FOLDER, download_filename)
+    with open(output_path, 'w', encoding='utf-8') as f:
+        f.write(markdown)
 
     return send_file(
-        temp_file.name,
+        output_path,
         as_attachment=True,
-        download_name='scraped_content.md',
+        download_name=download_filename,
         mimetype='text/markdown'
     )
+
+
+@app.route('/history')
+def get_history():
+    """Get list of all generated markdown files."""
+    files = []
+    for filename in os.listdir(OUTPUT_FOLDER):
+        if filename.endswith('.md'):
+            filepath = os.path.join(OUTPUT_FOLDER, filename)
+            stat = os.stat(filepath)
+
+            # Read first line to get title
+            title = filename.replace('.md', '').replace('_', ' ')
+            try:
+                with open(filepath, 'r', encoding='utf-8') as f:
+                    first_line = f.readline().strip()
+                    if first_line.startswith('# '):
+                        title = first_line[2:]
+            except:
+                pass
+
+            files.append({
+                'filename': filename,
+                'title': title,
+                'created': datetime.fromtimestamp(stat.st_mtime).isoformat(),
+                'size': stat.st_size
+            })
+
+    # Sort by creation time, newest first
+    files.sort(key=lambda x: x['created'], reverse=True)
+    return jsonify(files)
+
+
+@app.route('/history/<filename>')
+def download_history_file(filename):
+    """Download a specific file from history."""
+    # Sanitize filename to prevent directory traversal
+    filename = secure_filename(filename)
+    filepath = os.path.join(OUTPUT_FOLDER, filename)
+
+    if not os.path.exists(filepath):
+        return jsonify({'error': 'File not found'}), 404
+
+    return send_file(
+        filepath,
+        as_attachment=True,
+        download_name=filename,
+        mimetype='text/markdown'
+    )
+
+
+@app.route('/history/<filename>', methods=['DELETE'])
+def delete_history_file(filename):
+    """Delete a specific file from history."""
+    # Sanitize filename to prevent directory traversal
+    filename = secure_filename(filename)
+    filepath = os.path.join(OUTPUT_FOLDER, filename)
+
+    if not os.path.exists(filepath):
+        return jsonify({'error': 'File not found'}), 404
+
+    try:
+        os.remove(filepath)
+        return jsonify({'success': True})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 
 if __name__ == '__main__':
